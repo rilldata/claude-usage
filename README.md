@@ -31,9 +31,7 @@ curl https://rill.sh | sh
 Then:
 
 ```bash
-git clone <this repo>
-cd claude-usage
-rill start .
+rill start https://github.com/rilldata/claude-usage.git
 ```
 
 That's it. Open `http://localhost:9009`. The first time you run, Rill reads every JSONL file under `~/.claude/projects/` and materializes a DuckDB table — takes a few seconds. After that, navigate to **Claude Code Usage Overview** or **Claude Code Cost & Usage Explorer** in the sidebar.
