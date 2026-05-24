@@ -1,0 +1,31 @@
+type: model
+materialize: true
+
+connector: duckdb
+sql: |
+  -- Per-1M-token pricing for Claude models in USD.
+  -- Source: https://platform.claude.com/docs/en/about-claude/pricing (verified 2026-05-25).
+  -- Rows are matched against `message.model` in claude_messages by longest model_prefix,
+  -- so a dated ID like "claude-haiku-4-5-20251001" picks up the "claude-haiku-4-5" row.
+  SELECT * FROM (VALUES
+    -- Current generation
+    ('claude-opus-4-7',    5.0,  25.0, 0.50,  6.25, 10.0,  'current'),
+    ('claude-opus-4-6',    5.0,  25.0, 0.50,  6.25, 10.0,  'current'),
+    ('claude-opus-4-5',    5.0,  25.0, 0.50,  6.25, 10.0,  'current'),
+    ('claude-sonnet-4-6',  3.0,  15.0, 0.30,  3.75,  6.0,  'current'),
+    ('claude-sonnet-4-5',  3.0,  15.0, 0.30,  3.75,  6.0,  'current'),
+    ('claude-haiku-4-5',   1.0,   5.0, 0.10,  1.25,  2.0,  'current'),
+    -- Legacy / deprecated
+    ('claude-opus-4-1',   15.0,  75.0, 1.50, 18.75, 30.0,  'legacy'),
+    ('claude-opus-4',     15.0,  75.0, 1.50, 18.75, 30.0,  'legacy'),
+    ('claude-sonnet-4',    3.0,  15.0, 0.30,  3.75,  6.0,  'legacy'),
+    ('claude-haiku-3-5',   0.80,  4.0, 0.08,  1.0,   1.60, 'legacy')
+  ) AS t(
+    model_prefix,
+    input_price,
+    output_price,
+    cache_read_price,
+    cache_write_5m_price,
+    cache_write_1h_price,
+    generation
+  )

@@ -1,0 +1,174 @@
+type: metrics_view
+display_name: Claude Code Usage
+description: Messages, tokens, tools, and cost across all Claude Code sessions
+
+model: claude_messages
+timeseries: event_time
+smallest_time_grain: hour
+
+dimensions:
+  - name: role
+    column: role
+  - name: model
+    column: model
+  - name: project_name
+    display_name: Project
+    column: project_name
+  - name: project_dir
+    column: project_dir
+  - name: session_id
+    column: session_id
+  - name: session_slug
+    column: session_slug
+  - name: git_branch
+    column: git_branch
+  - name: service_tier
+    column: service_tier
+  - name: stop_reason
+    column: stop_reason
+  - name: cli_version
+    column: cli_version
+  - name: user_type
+    column: user_type
+  - name: entrypoint
+    display_name: Entrypoint
+    description: How Claude Code was invoked (cli, claude-vscode, etc.)
+    column: entrypoint
+  - name: permission_mode
+    display_name: Permission Mode
+    description: Permission mode (auto, plan, etc.)
+    column: permission_mode
+  - name: is_sidechain
+    display_name: Sub-agent
+    description: True for sub-agent / Task tool sidechain calls
+    column: is_sidechain
+  - name: is_user_prompt
+    display_name: Is user prompt
+    description: True for user-typed prompts (not tool-result replies)
+    column: is_user_prompt
+  - name: has_tool_use
+    display_name: Has tool use
+    description: True if the assistant called any tool in this turn
+    column: has_tool_use
+  - name: has_tool_result
+    display_name: Has tool result
+    description: True if the message contains a tool_result block
+    column: has_tool_result
+  - name: tool_names
+    display_name: Tools used
+    description: Comma-separated tool names called in this turn
+    column: tool_names
+  - name: prompt_id
+    display_name: Prompt ID
+    column: prompt_id
+  - name: parent_uuid
+    display_name: Parent UUID
+    description: UUID of the parent event (for conversation threading)
+    column: parent_uuid
+  - name: uuid
+    display_name: Event UUID
+    column: uuid
+  - name: request_id
+    display_name: Request ID
+    description: Anthropic API request ID (one per actual API call)
+    column: request_id
+  - name: message_id
+    display_name: Message ID
+    description: Anthropic message ID (msg_xxx)
+    column: message_id
+  - name: message_text
+    display_name: Message text
+    description: Full message text (user prompt, assistant response, or tool result)
+    column: message_text
+  - name: thinking_text
+    display_name: Thinking text
+    description: Extended-thinking content from the assistant
+    column: thinking_text
+
+measures:
+  - name: total_messages
+    display_name: Total Messages
+    expression: COUNT(*)
+    format_preset: humanize
+  - name: assistant_messages
+    expression: COUNT(*) FILTER (WHERE role = 'assistant')
+    format_preset: humanize
+  - name: user_messages
+    expression: COUNT(*) FILTER (WHERE role = 'user')
+    format_preset: humanize
+  - name: user_prompts
+    display_name: User prompts
+    description: Count of user-typed prompts (excludes tool-result replies)
+    expression: COUNT(*) FILTER (WHERE is_user_prompt)
+    format_preset: humanize
+  - name: total_tool_calls
+    display_name: Tool calls
+    expression: SUM(tool_use_count)
+    format_preset: humanize
+  - name: total_input_tokens
+    display_name: Input Tokens
+    expression: SUM(input_tokens)
+    format_preset: humanize
+  - name: total_output_tokens
+    display_name: Output Tokens
+    expression: SUM(output_tokens)
+    format_preset: humanize
+  - name: total_cache_read_tokens
+    display_name: Cache Read Tokens
+    expression: SUM(cache_read_tokens)
+    format_preset: humanize
+  - name: total_cache_creation_tokens
+    display_name: Cache Creation Tokens
+    expression: SUM(cache_creation_tokens)
+    format_preset: humanize
+  - name: total_tokens
+    display_name: Total Tokens
+    expression: SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0))
+    format_preset: humanize
+  - name: avg_output_tokens_per_message
+    expression: SUM(output_tokens) / NULLIF(COUNT(*) FILTER (WHERE role = 'assistant'), 0)
+    format_preset: humanize
+    valid_percent_of_total: false
+  - name: total_cost_usd
+    display_name: Total Cost (USD)
+    expression: SUM(cost_usd)
+    format_d3: "$,.2f"
+  - name: max_cost_per_message
+    display_name: Max Cost / Message (USD)
+    description: Single most expensive turn in the slice
+    expression: MAX(cost_usd)
+    format_d3: "$,.4f"
+    valid_percent_of_total: false
+  - name: avg_cost_per_message
+    display_name: Avg Cost / Message (USD)
+    expression: SUM(cost_usd) / NULLIF(COUNT(*) FILTER (WHERE role = 'assistant'), 0)
+    format_d3: "$,.4f"
+    valid_percent_of_total: false
+  - name: avg_cost_per_session
+    display_name: Avg Cost / Session (USD)
+    expression: SUM(cost_usd) / NULLIF(COUNT(DISTINCT session_id), 0)
+    format_d3: "$,.2f"
+    valid_percent_of_total: false
+  - name: avg_cost_per_user_prompt
+    display_name: Avg Cost / User prompt (USD)
+    description: Mean assistant cost amortized per user-typed prompt
+    expression: SUM(cost_usd) / NULLIF(COUNT(*) FILTER (WHERE is_user_prompt), 0)
+    format_d3: "$,.4f"
+    valid_percent_of_total: false
+  - name: unique_sessions
+    display_name: Unique Sessions
+    expression: COUNT(DISTINCT session_id)
+    format_preset: humanize
+  - name: unique_projects
+    display_name: Unique Projects
+    expression: COUNT(DISTINCT project_name)
+    format_preset: humanize
+
+explore:
+  defaults:
+    time_range: inf
+    measures:
+      - total_cost_usd
+      - total_messages
+      - user_prompts
+      - unique_sessions

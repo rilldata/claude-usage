@@ -1,0 +1,28 @@
+type: explore
+metrics_view: claude_usage
+display_name: Claude Code Cost & Usage Explorer
+
+dimensions: '*'
+measures: '*'
+
+time_ranges:
+  - P1D
+  - P7D
+  - P30D
+  - P90D
+  - inf
+
+defaults:
+  time_range: inf
+  comparison_mode: time
+  measures:
+    - total_cost_usd
+    - total_messages
+    - total_output_tokens
+    - total_cache_read_tokens
+    - unique_sessions
+  dimensions:
+    - project_name
+    - model
+    - role
+    - session_slug

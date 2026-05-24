@@ -1,0 +1,246 @@
+type: model
+materialize: true
+
+connector: duckdb
+sql: |
+  WITH raw AS (
+    SELECT
+      sessionId AS session_id,
+      cwd AS project_dir,
+      regexp_extract(cwd, '[^/]+$') AS project_name,
+      type AS event_type,
+      TRY_CAST(timestamp AS TIMESTAMP) AS event_time,
+      version AS cli_version,
+      gitBranch AS git_branch,
+      slug AS session_slug,
+      userType AS user_type,
+      entrypoint,
+      COALESCE(isSidechain, false) AS is_sidechain,
+      promptId AS prompt_id,
+      permissionMode AS permission_mode,
+      json_extract_string(message, '$.role') AS role,
+      json_extract_string(message, '$.model') AS model,
+      json_extract_string(message, '$.id') AS message_id,
+      TRY_CAST(json_extract_string(message, '$.usage.input_tokens') AS BIGINT) AS input_tokens,
+      TRY_CAST(json_extract_string(message, '$.usage.output_tokens') AS BIGINT) AS output_tokens,
+      TRY_CAST(json_extract_string(message, '$.usage.cache_read_input_tokens') AS BIGINT) AS cache_read_tokens,
+      TRY_CAST(json_extract_string(message, '$.usage.cache_creation_input_tokens') AS BIGINT) AS cache_creation_tokens,
+      json_extract_string(message, '$.usage.service_tier') AS service_tier,
+      json_extract_string(message, '$.stop_reason') AS stop_reason,
+      requestId AS request_id,
+      uuid,
+      parentUuid AS parent_uuid,
+      message
+    FROM read_json(
+      '~/.claude/projects/*/*.jsonl',
+      format='newline_delimited',
+      columns={
+        sessionId: 'VARCHAR',
+        cwd: 'VARCHAR',
+        type: 'VARCHAR',
+        timestamp: 'VARCHAR',
+        message: 'JSON',
+        requestId: 'VARCHAR',
+        uuid: 'VARCHAR',
+        parentUuid: 'VARCHAR',
+        version: 'VARCHAR',
+        gitBranch: 'VARCHAR',
+        slug: 'VARCHAR',
+        userType: 'VARCHAR',
+        entrypoint: 'VARCHAR',
+        isSidechain: 'BOOLEAN',
+        promptId: 'VARCHAR',
+        permissionMode: 'VARCHAR'
+      },
+      ignore_errors=true,
+      maximum_object_size=67108864
+    )
+    WHERE type IN ('user', 'assistant')
+  ),
+  -- Extract content-block aggregates. message.content is either a VARCHAR (typed
+  -- user prompts) or an array of typed blocks: text, thinking, tool_use, tool_result.
+  content_expanded AS (
+    SELECT
+      raw.*,
+      -- Block type list (NULL when content isn't an array)
+      CASE WHEN json_type(message, '$.content') = 'ARRAY'
+        THEN [json_extract_string(message, '$.content[' || i || '].type')
+              FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)]
+      END AS block_types_list
+    FROM raw
+  ),
+  with_content AS (
+    SELECT
+      ce.* EXCLUDE (block_types_list, message),
+      block_types_list,
+      -- Direct string content (typical typed user prompts)
+      CASE WHEN json_type(message, '$.content') = 'VARCHAR'
+        THEN json_extract_string(message, '$.content')
+      END AS content_string,
+      -- Concatenated text blocks (assistant responses + user text-blocks)
+      CASE WHEN json_type(message, '$.content') = 'ARRAY' THEN
+        array_to_string(
+          list_filter(
+            [CASE WHEN json_extract_string(message, '$.content[' || i || '].type') = 'text'
+                  THEN json_extract_string(message, '$.content[' || i || '].text') END
+             FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)],
+            x -> x IS NOT NULL
+          ),
+          E'\n\n'
+        )
+      END AS text_blocks,
+      -- Concatenated thinking content (only when extended-thinking is on)
+      CASE WHEN json_type(message, '$.content') = 'ARRAY' THEN
+        array_to_string(
+          list_filter(
+            [CASE WHEN json_extract_string(message, '$.content[' || i || '].type') = 'thinking'
+                  THEN json_extract_string(message, '$.content[' || i || '].thinking') END
+             FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)],
+            x -> x IS NOT NULL
+          ),
+          E'\n\n'
+        )
+      END AS thinking_blocks,
+      -- Concatenated tool_result content (user messages replying to assistant tool calls)
+      CASE WHEN json_type(message, '$.content') = 'ARRAY' THEN
+        array_to_string(
+          list_filter(
+            [CASE WHEN json_extract_string(message, '$.content[' || i || '].type') = 'tool_result'
+                  THEN COALESCE(
+                    json_extract_string(message, '$.content[' || i || '].content'),
+                    CAST(json_extract(message, '$.content[' || i || '].content') AS VARCHAR)
+                  ) END
+             FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)],
+            x -> x IS NOT NULL
+          ),
+          E'\n\n'
+        )
+      END AS tool_result_blocks,
+      -- Distinct tool names used (assistant tool_use blocks)
+      CASE WHEN json_type(message, '$.content') = 'ARRAY' THEN
+        list_distinct(list_filter(
+          [CASE WHEN json_extract_string(message, '$.content[' || i || '].type') = 'tool_use'
+                THEN json_extract_string(message, '$.content[' || i || '].name') END
+           FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)],
+          x -> x IS NOT NULL
+        ))
+      END AS tool_names_list,
+      -- Per-call tool detail: "Read({...args})" for each tool_use block, semicolon-separated.
+      -- Useful as a fallback for message_text on tool-only turns.
+      CASE WHEN json_type(message, '$.content') = 'ARRAY' THEN
+        array_to_string(
+          list_filter(
+            [CASE WHEN json_extract_string(message, '$.content[' || i || '].type') = 'tool_use'
+                  THEN json_extract_string(message, '$.content[' || i || '].name')
+                       || '('
+                       || SUBSTR(CAST(json_extract(message, '$.content[' || i || '].input') AS VARCHAR), 1, 400)
+                       || ')'
+             END
+             FOR i IN range(COALESCE(json_array_length(message, '$.content'), 0)::BIGINT)],
+            x -> x IS NOT NULL
+          ),
+          '; '
+        )
+      END AS tool_uses_detail
+    FROM content_expanded ce
+  ),
+  enriched AS (
+    SELECT
+      * EXCLUDE (content_string, text_blocks, thinking_blocks, tool_result_blocks, tool_names_list, tool_uses_detail, block_types_list),
+      -- Best-effort full message text. Falls through in this order so every turn shows
+      -- something useful — tool-only turns get the tool detail, thinking-only turns
+      -- (e.g. redacted-thinking assistants) get the thinking text.
+      COALESCE(
+        content_string,
+        NULLIF(text_blocks, ''),
+        NULLIF(tool_uses_detail, ''),
+        NULLIF(tool_result_blocks, ''),
+        NULLIF(thinking_blocks, '')
+      ) AS message_text,
+      NULLIF(thinking_blocks, '') AS thinking_text,
+      NULLIF(tool_result_blocks, '') AS tool_result_text,
+      NULLIF(tool_uses_detail, '') AS tool_uses_detail,
+      array_to_string(tool_names_list, ', ') AS tool_names,
+      COALESCE(len(tool_names_list), 0) AS tool_use_count,
+      COALESCE(len(list_filter(block_types_list, x -> x = 'tool_result')), 0) AS tool_result_count,
+      COALESCE(len(list_filter(block_types_list, x -> x = 'thinking')), 0) AS thinking_block_count,
+      COALESCE(len(block_types_list), 0) AS block_count,
+      COALESCE(list_contains(block_types_list, 'tool_use'), false) AS has_tool_use,
+      COALESCE(list_contains(block_types_list, 'tool_result'), false) AS has_tool_result,
+      -- A "real" user prompt is role='user' that isn't just replying to a tool call
+      (role = 'user' AND COALESCE(list_contains(block_types_list, 'tool_result'), false) = false) AS is_user_prompt
+    FROM with_content
+  ),
+  with_pricing AS (
+    SELECT
+      e.*,
+      p.input_price,
+      p.output_price,
+      p.cache_read_price,
+      p.cache_write_5m_price
+    FROM enriched e
+    LEFT JOIN claude_model_pricing p
+      ON e.model LIKE p.model_prefix || '%'
+    QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY e.uuid
+      ORDER BY LENGTH(p.model_prefix) DESC NULLS LAST
+    ) = 1
+  ),
+  costed AS (
+    SELECT
+      *,
+      COALESCE(input_tokens, 0)          * COALESCE(input_price, 0)          / 1000000
+      + COALESCE(output_tokens, 0)         * COALESCE(output_price, 0)         / 1000000
+      + COALESCE(cache_read_tokens, 0)     * COALESCE(cache_read_price, 0)     / 1000000
+      + COALESCE(cache_creation_tokens, 0) * COALESCE(cache_write_5m_price, 0) / 1000000
+      AS cost_usd
+    FROM with_pricing
+  )
+  -- Claude Code logs each content block (thinking / text / tool_use) as a separate
+  -- assistant event with the SAME request_id. usage/cost values are identical across
+  -- those chunks, but content differs. Collapse them into one logical message per
+  -- request_id, merging text/thinking/tool fields, while keeping cost counted once.
+  -- Rows without a request_id (user prompts) pass through one-per-event.
+  SELECT
+    ANY_VALUE(session_id)              AS session_id,
+    ANY_VALUE(project_dir)             AS project_dir,
+    ANY_VALUE(project_name)            AS project_name,
+    ANY_VALUE(event_type)              AS event_type,
+    MIN(event_time)                    AS event_time,
+    ANY_VALUE(cli_version)             AS cli_version,
+    ANY_VALUE(git_branch)              AS git_branch,
+    ANY_VALUE(session_slug)            AS session_slug,
+    ANY_VALUE(user_type)               AS user_type,
+    ANY_VALUE(entrypoint)              AS entrypoint,
+    BOOL_OR(is_sidechain)              AS is_sidechain,
+    ANY_VALUE(prompt_id)               AS prompt_id,
+    ANY_VALUE(permission_mode)         AS permission_mode,
+    ANY_VALUE(role)                    AS role,
+    ANY_VALUE(model)                   AS model,
+    ANY_VALUE(message_id)              AS message_id,
+    ANY_VALUE(input_tokens)            AS input_tokens,
+    ANY_VALUE(output_tokens)           AS output_tokens,
+    ANY_VALUE(cache_read_tokens)       AS cache_read_tokens,
+    ANY_VALUE(cache_creation_tokens)   AS cache_creation_tokens,
+    ANY_VALUE(service_tier)            AS service_tier,
+    ANY_VALUE(stop_reason)             AS stop_reason,
+    request_id,
+    ANY_VALUE(uuid)                    AS uuid,
+    ANY_VALUE(parent_uuid)             AS parent_uuid,
+    -- Content fields: merge across chunks in event-time order.
+    NULLIF(string_agg(message_text, E'\n\n' ORDER BY event_time) FILTER (WHERE message_text IS NOT NULL), '')      AS message_text,
+    NULLIF(string_agg(thinking_text, E'\n\n' ORDER BY event_time) FILTER (WHERE thinking_text IS NOT NULL), '')    AS thinking_text,
+    NULLIF(string_agg(tool_uses_detail, '; ' ORDER BY event_time) FILTER (WHERE tool_uses_detail IS NOT NULL), '') AS tool_uses_detail,
+    NULLIF(string_agg(tool_result_text, E'\n\n' ORDER BY event_time) FILTER (WHERE tool_result_text IS NOT NULL), '') AS tool_result_text,
+    NULLIF(string_agg(DISTINCT tool_names, ', ') FILTER (WHERE tool_names IS NOT NULL AND tool_names <> ''), '')   AS tool_names,
+    SUM(tool_use_count)                AS tool_use_count,
+    SUM(tool_result_count)             AS tool_result_count,
+    SUM(thinking_block_count)          AS thinking_block_count,
+    SUM(block_count)                   AS block_count,
+    BOOL_OR(has_tool_use)              AS has_tool_use,
+    BOOL_OR(has_tool_result)           AS has_tool_result,
+    BOOL_OR(is_user_prompt)            AS is_user_prompt,
+    -- Cost is identical across chunks of one request_id; take it once.
+    ANY_VALUE(cost_usd)                AS cost_usd
+  FROM costed
+  GROUP BY request_id, CASE WHEN request_id IS NULL THEN uuid ELSE 'agg' END

@@ -1,0 +1,231 @@
+type: canvas
+display_name: Claude Code Usage Overview
+
+defaults:
+  time_range: inf
+  comparison_mode: time
+
+max_width: 1600
+
+filters:
+  enable: true
+  pinned:
+    - project_name
+    - model
+    - role
+    - is_sidechain
+    - has_tool_use
+    - is_user_prompt
+    - tool_names
+
+time_ranges:
+  - P1D
+  - P7D
+  - P30D
+  - P90D
+  - inf
+
+rows:
+  - height: 60px
+    items:
+      - width: 12
+        markdown:
+          content: |
+            # Claude Code Usage Overview
+            Messages and token usage across all local Claude Code sessions.
+          alignment:
+            horizontal: left
+            vertical: middle
+
+  - height: 200px
+    items:
+      - width: 12
+        kpi_grid:
+          metrics_view: claude_usage
+          measures:
+            - total_cost_usd
+            - total_messages
+            - total_output_tokens
+            - total_cache_read_tokens
+            - avg_cost_per_session
+            - unique_sessions
+            - unique_projects
+          comparison:
+            - percent_change
+            - previous
+          sparkline: right
+
+  - height: 400px
+    items:
+      - width: 6
+        line_chart:
+          metrics_view: claude_usage
+          title: Messages over time
+          color: primary
+          x:
+            field: event_time
+            type: temporal
+          y:
+            field: total_messages
+            type: quantitative
+            zeroBasedOrigin: true
+      - width: 6
+        stacked_bar:
+          metrics_view: claude_usage
+          title: Token usage over time
+          color:
+            field: rill_measures
+            type: value
+            legendOrientation: top
+          x:
+            field: event_time
+            type: temporal
+          y:
+            field: total_input_tokens
+            fields:
+              - total_input_tokens
+              - total_output_tokens
+              - total_cache_read_tokens
+              - total_cache_creation_tokens
+            type: quantitative
+            zeroBasedOrigin: true
+
+  - height: 400px
+    items:
+      - width: 6
+        leaderboard:
+          metrics_view: claude_usage
+          title: Top Projects by Cost
+          dimensions:
+            - project_name
+          measures:
+            - total_cost_usd
+            - total_messages
+            - total_output_tokens
+            - unique_sessions
+          num_rows: 10
+      - width: 6
+        bar_chart:
+          metrics_view: claude_usage
+          title: Cost by model
+          color: hsl(210, 70%, 50%)
+          x:
+            field: model
+            type: nominal
+            limit: 10
+            sort: -y
+            labelAngle: 0
+          y:
+            field: total_cost_usd
+            type: quantitative
+            zeroBasedOrigin: true
+
+  - height: 400px
+    items:
+      - width: 4
+        donut_chart:
+          metrics_view: claude_usage
+          title: Messages by role
+          innerRadius: 50
+          color:
+            field: role
+            type: nominal
+            limit: 5
+            sort: -measure
+          measure:
+            field: total_messages
+            type: quantitative
+            showTotal: true
+      - width: 8
+        stacked_bar:
+          metrics_view: claude_usage
+          title: Messages over time by model
+          color:
+            field: model
+            type: nominal
+            limit: 6
+            legendOrientation: top
+          x:
+            field: event_time
+            type: temporal
+          y:
+            field: total_messages
+            type: quantitative
+            zeroBasedOrigin: true
+
+  - height: 400px
+    items:
+      - width: 12
+        stacked_bar:
+          metrics_view: claude_usage
+          title: Cost over time by model
+          color:
+            field: model
+            type: nominal
+            limit: 6
+            legendOrientation: top
+          x:
+            field: event_time
+            type: temporal
+          y:
+            field: total_cost_usd
+            type: quantitative
+            zeroBasedOrigin: true
+
+  - height: 400px
+    items:
+      - width: 6
+        leaderboard:
+          metrics_view: claude_usage
+          title: Top Sessions by Cost
+          dimensions:
+            - session_slug
+            - project_name
+          measures:
+            - total_cost_usd
+            - total_output_tokens
+            - total_cache_read_tokens
+            - total_messages
+          num_rows: 15
+      - width: 6
+        leaderboard:
+          metrics_view: claude_usage
+          title: Cost by Tool Combination
+          dimensions:
+            - tool_names
+          measures:
+            - total_cost_usd
+            - total_tool_calls
+            - total_messages
+          num_rows: 15
+
+  - height: 60px
+    items:
+      - width: 12
+        markdown:
+          content: |
+            ## Per-message cost trace
+            Drill into individual API calls. Filter on `role`, `is_user_prompt`, or
+            `project_name` in the bar above to narrow down.
+          alignment:
+            horizontal: left
+            vertical: middle
+
+  - height: 600px
+    items:
+      - width: 12
+        table:
+          metrics_view: claude_usage
+          title: Messages
+          columns:
+            - event_time
+            - project_name
+            - session_slug
+            - role
+            - model
+            - message_text
+            - tool_names
+            - total_cost_usd
+            - total_input_tokens
+            - total_output_tokens
+            - total_cache_read_tokens
